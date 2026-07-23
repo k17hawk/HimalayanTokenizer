@@ -32,6 +32,9 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fs;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unicode_normalization::UnicodeNormalization;
 
@@ -356,7 +359,7 @@ impl AksharaDFA {
     /// because the longer accepting run wins.
     pub fn devanagari_default() -> Self {
         let mut d = Self::new();
-        let  add = |s: usize, c: char, t: usize, acc: bool, d: &mut Self| {
+        let mut add = |s: usize, c: char, t: usize, acc: bool, d: &mut Self| {
             d.transitions.insert((s, c), t);
             if acc {
                 d.accepting_states.insert(t);
@@ -905,6 +908,11 @@ pub struct Corpus {
     pair_freqs: HashMap<(TokenId, TokenId), Frequency>,
     #[allow(dead_code)]
     vocab_budget: usize,
+    /// [EQ-10] Fingerprint of C_0, the corpus as first built. Carried unchanged
+    /// through every merge and written into each checkpoint, so resuming a
+    /// checkpoint against a different corpus file is caught rather than
+    /// producing a quietly wrong vocabulary.
+    origin_fingerprint: u64,
 }
 
 impl Corpus {
@@ -919,10 +927,12 @@ impl Corpus {
             .into_iter()
             .map(|(tokens, count)| Word { tokens, count })
             .collect();
+        let fp = fingerprint_words(&words);
         let mut corpus = Self {
             words,
             pair_freqs: HashMap::new(),
             vocab_budget,
+            origin_fingerprint: fp,
         };
         corpus.recompute_all_frequencies();
         corpus
@@ -933,13 +943,51 @@ impl Corpus {
             .into_iter()
             .map(|tokens| Word { tokens, count: 1 })
             .collect();
+        let fp = fingerprint_words(&words);
         let mut corpus = Self {
             words,
             pair_freqs: HashMap::new(),
             vocab_budget,
+            origin_fingerprint: fp,
         };
         corpus.recompute_all_frequencies();
         corpus
+    }
+
+    /// [EQ-10] Rebuild C_n from a checkpoint. `origin_fingerprint` is the one
+    /// recorded when C_0 was built, NOT recomputed here — C_n has been mutated
+    /// by n merges and would hash differently.
+    pub fn from_checkpoint_words(
+        raw: Vec<(Frequency, Vec<TokenId>)>,
+        vocab_budget: usize,
+        origin_fingerprint: u64,
+    ) -> Self {
+        let words: Vec<Word> = raw
+            .into_iter()
+            .map(|(count, tokens)| Word { tokens, count })
+            .collect();
+        let mut corpus = Self {
+            words,
+            pair_freqs: HashMap::new(),
+            vocab_budget,
+            origin_fingerprint,
+        };
+        // Freq is DERIVED state: recomputing it from C_n is both cheaper than
+        // serializing it and immune to a stale-counts bug on resume.
+        corpus.recompute_all_frequencies();
+        corpus
+    }
+
+    pub fn origin_fingerprint(&self) -> u64 {
+        self.origin_fingerprint
+    }
+
+    pub fn word_type_count(&self) -> usize {
+        self.words.len()
+    }
+
+    fn export_words(&self) -> impl Iterator<Item = (Frequency, &[TokenId])> {
+        self.words.iter().map(|w| (w.count, w.tokens.as_slice()))
     }
 
     fn recompute_all_frequencies(&mut self) {
@@ -1047,6 +1095,12 @@ pub struct ConstrainedBPETrainer {
     pub use_probabilistic_k: bool,
     /// [EQ-3] Cap on |RootSet| scanned by MorphScore. 0 = uncapped.
     pub root_set_cap: usize,
+    /// [EQ-10] Checkpoint policy + the Theta components the trainer does not
+    /// otherwise own (mode tag, budgets, lexicon, paradigm fingerprint).
+    pub checkpoint: CheckpointConfig,
+    /// [EQ-10] Cumulative merges across ALL resumes, so step numbering and the
+    /// merge index are continuous rather than restarting at 0 each session.
+    pub merges_done: u64,
 }
 
 impl ConstrainedBPETrainer {
@@ -1060,6 +1114,8 @@ impl ConstrainedBPETrainer {
             token_weight: HashMap::new(),
             use_probabilistic_k: false,
             root_set_cap: 0,
+            checkpoint: CheckpointConfig::default(),
+            merges_done: 0,
         }
     }
 
@@ -1240,7 +1296,28 @@ impl ConstrainedBPETrainer {
                 }
 
                 merges += 1;
+                self.merges_done += 1;
                 applied = true;
+
+                // [EQ-10] Periodic save. Taken HERE — after the merge has been
+                // applied to both V and C, and before the next pop — so the
+                // written state is a consistent Sigma_n for an integer n, never
+                // a vocabulary that is one merge ahead of the corpus.
+                if self.checkpoint.dir.is_some()
+                    && self.checkpoint.every > 0
+                    && self.merges_done % self.checkpoint.every == 0
+                {
+                    match self.save_checkpoint(corpus, self.merges_done) {
+                        Ok(Some(p)) => {
+                            if progress_every > 0 {
+                                eprintln!("[ckpt:{}] wrote {}", tag, p.display());
+                            }
+                        }
+                        Ok(None) => {}
+                        // A failed checkpoint must not kill a multi-day run.
+                        Err(e) => eprintln!("[ckpt:{}] WARNING save failed: {}", tag, e),
+                    }
+                }
 
                 if progress_every > 0 && merges % progress_every == 0 {
                     let secs = t0.elapsed().as_secs_f64();
@@ -1259,6 +1336,17 @@ impl ConstrainedBPETrainer {
 
             if !applied {
                 break;
+            }
+        }
+
+        // [EQ-10] End-of-phase save, unconditional on `every`. This is what makes
+        // the DEV->LAT handoff resumable: without it, a crash between the two
+        // passes of a bilingual run would rewind to the last periodic save.
+        if self.checkpoint.dir.is_some() {
+            match self.save_checkpoint(corpus, self.merges_done) {
+                Ok(Some(p)) => eprintln!("[ckpt:{}] final {}", tag, p.display()),
+                Ok(None) => {}
+                Err(e) => eprintln!("[ckpt:{}] WARNING final save failed: {}", tag, e),
             }
         }
 
@@ -1287,6 +1375,588 @@ impl ConstrainedBPETrainer {
             }
         }
     }
+}
+
+// ============================================================================
+// Training checkpoints  [EQ-10]
+// ----------------------------------------------------------------------------
+// The training state after n merges is
+//
+//     Sigma_n = ( V_n , R_n , C_n , Theta )
+//
+//   V_n  vocabulary: surfaces, variants, scripts, V_strict, V_ambiguous, c(u)
+//   R_n  RootSet_n : TokenID -> 2^RootID       <- PATH-DEPENDENT
+//   C_n  word types with their CURRENT token sequences, and counts
+//   Theta config: theta, latin_pass, P(root), W, E1 flags, mode, L, budgets
+//
+// Two things are deliberately NOT checkpointed because they are DERIVED:
+//
+//   Freq_n  = fold over C_n              -> recomputed by recompute_all_frequencies
+//   Heap_n  = rebuild from A_n           -> recomputed by initialize_heap
+//
+// Rebuilding the heap instead of serializing it is not a shortcut, it is the
+// safer option: a rebuilt heap contains exactly A_n with current K and zero
+// stale entries, so its first pop is the same argmax that the surviving pop of
+// the running heap would have been (invariant of 3.4). Resume is therefore
+// EXACT, not approximate.
+//
+// Two things that look derivable but are NOT:
+//
+//   R_n  narrowing is path-dependent. RootSet(a.b) is a function of the merge
+//        sequence, so re-running assign_roots_from_registry on resume would
+//        OVERWRITE narrowed sets with un-narrowed ones and loosen Morph. The
+//        resume path must not call it.
+//   C_n  cannot be reconstructed by re-encoding the source corpus with V_n:
+//        greedy-longest-match over V_n is a different partition than applying
+//        merges 1..n in order. C_n is genuine state.
+// ============================================================================
+
+const CKPT_VERSION: &str = "4.1";
+const CKPT_COMPLETE: &str = "COMPLETE";
+const CKPT_LATEST: &str = "LATEST";
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Order-independent (commutative sum) so it does not depend on HashMap
+/// iteration order, which varies run to run.
+fn fingerprint_words(words: &[Word]) -> u64 {
+    let mut acc: u64 = 0;
+    for w in words {
+        let mut buf = Vec::with_capacity(w.tokens.len() * 8 + 8);
+        for &t in &w.tokens {
+            buf.extend_from_slice(&(t as u64).to_le_bytes());
+        }
+        buf.extend_from_slice(&w.count.to_le_bytes());
+        acc = acc.wrapping_add(fnv1a64(&buf));
+    }
+    acc ^ (words.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+fn fingerprint_paradigms(registry: &ParadigmRegistry) -> u64 {
+    let mut acc: u64 = 0;
+    for p in &registry.paradigms {
+        for (prefix, conts) in &p.allowed_transitions {
+            for c in conts {
+                let s = format!("{}\u{1}{}\u{1}{}", p.root_id, prefix, c);
+                acc = acc.wrapping_add(fnv1a64(s.as_bytes()));
+            }
+        }
+    }
+    acc
+}
+
+#[derive(Clone, Default)]
+pub struct CheckpointConfig {
+    /// None = checkpointing disabled.
+    pub dir: Option<String>,
+    /// Save every N merges. 0 = only the end-of-phase save.
+    pub every: u64,
+    /// Retain the most recent N step directories. 0 = keep all.
+    pub keep: usize,
+    // ---- Theta components the trainer does not otherwise own ----
+    pub mode_tag: String,
+    pub seed_max_len: usize,
+    pub dev_budget: usize,
+    pub total_budget: usize,
+    pub paradigm_fingerprint: u64,
+    pub lexicon: HashMap<String, RootId>,
+}
+
+fn ckpt_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn ckpt_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('t') => out.push('\t'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some(o) => {
+                    out.push('\\');
+                    out.push(o);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn script_tag(s: Script) -> char {
+    match s {
+        Script::DEV => 'D',
+        Script::LAT => 'L',
+        Script::PUN => 'P',
+        Script::FMT => 'F',
+        Script::MAL => 'M',
+    }
+}
+
+fn script_from_tag(c: char) -> Script {
+    match c {
+        'D' => Script::DEV,
+        'L' => Script::LAT,
+        'P' => Script::PUN,
+        'F' => Script::FMT,
+        _ => Script::MAL,
+    }
+}
+
+/// One serialized vocabulary entry. Everything `load_from_pairs` throws away —
+/// V_strict / V_ambiguous membership, root sets, induction confidence, merge
+/// children — is carried here. That is the whole reason the vocab TSV is not
+/// sufficient as a checkpoint: it is encode/decode-ready, not training-ready.
+struct CkptRow {
+    id: TokenId,
+    kind: char,
+    script: Script,
+    flags: u8, // bit0 = strict, bit1 = ambiguous
+    aux: String,
+    roots: Vec<RootId>,
+    conf: Option<f64>,
+    surface: String,
+}
+
+impl Vocabulary {
+    fn export_ckpt_rows(&self) -> Vec<CkptRow> {
+        let mut rows = Vec::with_capacity(self.tokens.len());
+        for id in 0..self.tokens.len() {
+            let tok = &*self.tokens[id];
+            let (kind, aux) = match tok {
+                Token::Akshara(_) => ('A', String::from("-")),
+                Token::Punctuation(_) => ('P', String::from("-")),
+                Token::ZWNJ => ('Z', String::from("-")),
+                Token::ByteFallback(b) => ('B', b.to_string()),
+                Token::SeededMorpheme(_) => ('S', String::from("-")),
+                Token::MergedToken(children) => (
+                    'M',
+                    children.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","),
+                ),
+                Token::Latin(_) => ('T', String::from("-")),
+                Token::Loaded(_) => ('O', String::from("-")),
+            };
+            let mut flags = 0u8;
+            if self.v_strict.contains(&id) {
+                flags |= 1;
+            }
+            if self.v_ambiguous.contains(&id) {
+                flags |= 2;
+            }
+            rows.push(CkptRow {
+                id,
+                kind,
+                script: self.get_script(id),
+                flags,
+                aux,
+                roots: self.get_root_set(id).to_vec(),
+                conf: self.induction_conf.get(&id).copied(),
+                surface: self.surfaces.get(&id).cloned().unwrap_or_default(),
+            });
+        }
+        rows
+    }
+
+    fn import_ckpt_rows(&mut self, mut rows: Vec<CkptRow>) {
+        self.tokens.clear();
+        self.surface_to_id.clear();
+        self.id_to_script.clear();
+        self.v_strict.clear();
+        self.v_ambiguous.clear();
+        self.token_to_root_set.clear();
+        self.surfaces.clear();
+        self.induction_conf.clear();
+        self.max_surface_len = 0;
+
+        rows.sort_by_key(|r| r.id);
+
+        for r in rows {
+            let id = self.tokens.len();
+            debug_assert_eq!(id, r.id, "checkpoint vocab ids must be contiguous from 0");
+
+            let token: Arc<Token> = match r.kind {
+                'A' => Arc::new(Token::Akshara(Akshara {
+                    surface: r.surface.clone(),
+                    root_set: r.roots.clone(),
+                })),
+                'P' => Arc::new(Token::Punctuation(r.surface.clone())),
+                'Z' => Arc::new(Token::ZWNJ),
+                'B' => Arc::new(Token::ByteFallback(r.aux.parse::<u8>().unwrap_or(0))),
+                'S' => Arc::new(Token::SeededMorpheme(r.surface.clone())),
+                'M' => {
+                    let children: Vec<TokenId> = r
+                        .aux
+                        .split(',')
+                        .filter_map(|s| s.parse::<TokenId>().ok())
+                        .collect();
+                    Arc::new(Token::MergedToken(children))
+                }
+                'T' => Arc::new(Token::Latin(r.surface.clone())),
+                _ => Arc::new(Token::Loaded(r.surface.clone())),
+            };
+
+            let clen = r.surface.chars().count();
+            if clen > self.max_surface_len {
+                self.max_surface_len = clen;
+            }
+            self.surface_to_id.insert(r.surface.clone(), id);
+            // Script is stored EXPLICITLY rather than derived from the variant:
+            // a MergedToken inherits its left child's script, which the variant
+            // alone does not record.
+            self.id_to_script.insert(id, r.script);
+            self.surfaces.insert(id, r.surface);
+            self.tokens.push(token);
+
+            if r.flags & 1 != 0 {
+                self.v_strict.insert(id);
+            }
+            if r.flags & 2 != 0 {
+                self.v_ambiguous.insert(id);
+            }
+            if !r.roots.is_empty() {
+                self.token_to_root_set.insert(id, r.roots);
+            }
+            if let Some(c) = r.conf {
+                self.induction_conf.insert(id, c);
+            }
+        }
+    }
+}
+
+/// Everything read back out of a checkpoint that the caller needs to continue.
+pub struct CheckpointMeta {
+    pub version: String,
+    pub mode_tag: String,
+    pub phase_latin: bool,
+    pub theta: Frequency,
+    pub dev_budget: usize,
+    pub total_budget: usize,
+    pub merges_done: u64,
+    pub vocab_len: usize,
+    pub word_types: usize,
+    pub seed_max_len: usize,
+    pub use_probabilistic_k: bool,
+    pub root_set_cap: usize,
+    pub corpus_fingerprint: u64,
+    pub paradigm_fingerprint: u64,
+}
+
+fn write_lines<P: AsRef<Path>>(path: P, lines: impl Iterator<Item = String>) -> std::io::Result<()> {
+    let f = fs::File::create(path)?;
+    let mut w = BufWriter::with_capacity(1 << 20, f);
+    for l in lines {
+        writeln!(w, "{}", l)?;
+    }
+    w.flush()?;
+    Ok(())
+}
+
+fn read_kv<P: AsRef<Path>>(path: P) -> std::io::Result<HashMap<String, String>> {
+    let f = fs::File::open(path)?;
+    let mut out = HashMap::new();
+    for line in BufReader::new(f).lines() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut it = line.splitn(2, '\t');
+        if let (Some(k), Some(v)) = (it.next(), it.next()) {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn step_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = match fs::read_dir(root) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_dir()
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("step_"))
+                        .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    v.sort();
+    v
+}
+
+impl ConstrainedBPETrainer {
+    /// [EQ-10] Write Sigma_n. Commit protocol: every file is written into the
+    /// step directory, then the COMPLETE sentinel is written LAST, then LATEST
+    /// is replaced. A checkpoint without COMPLETE is ignored by the loader, so a
+    /// crash mid-write can never leave a half-written state that looks valid.
+    pub fn save_checkpoint(
+        &self,
+        corpus: &Corpus,
+        merges_done: u64,
+    ) -> std::io::Result<Option<PathBuf>> {
+        let root = match &self.checkpoint.dir {
+            Some(d) => PathBuf::from(d),
+            None => return Ok(None),
+        };
+        fs::create_dir_all(&root)?;
+        let step_name = format!("step_{:012}", merges_done);
+        let step = root.join(&step_name);
+        if step.exists() {
+            fs::remove_dir_all(&step)?;
+        }
+        fs::create_dir_all(&step)?;
+
+        // --- V_n and R_n ---
+        write_lines(
+            step.join("vocab.tsv"),
+            self.vocab.export_ckpt_rows().into_iter().map(|r| {
+                let roots = if r.roots.is_empty() {
+                    "-".to_string()
+                } else {
+                    r.roots.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+                };
+                let conf = match r.conf {
+                    Some(c) => format!("{}", c),
+                    None => "-".to_string(),
+                };
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    r.id,
+                    r.kind,
+                    script_tag(r.script),
+                    r.flags,
+                    r.aux,
+                    roots,
+                    conf,
+                    ckpt_escape(&r.surface)
+                )
+            }),
+        )?;
+
+        // --- C_n ---
+        write_lines(
+            step.join("corpus.tsv"),
+            corpus.export_words().map(|(count, toks)| {
+                let mut s = String::with_capacity(toks.len() * 6 + 12);
+                s.push_str(&count.to_string());
+                s.push('\t');
+                for (i, t) in toks.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&t.to_string());
+                }
+                s
+            }),
+        )?;
+
+        // --- Theta ---
+        write_lines(
+            step.join("weights.tsv"),
+            self.token_weight.iter().map(|(id, w)| format!("{}\t{}", id, w)),
+        )?;
+        write_lines(
+            step.join("prior.tsv"),
+            self.root_prior.iter().map(|(r, p)| format!("{}\t{}", r, p)),
+        )?;
+        write_lines(
+            step.join("lexicon.tsv"),
+            self.checkpoint
+                .lexicon
+                .iter()
+                .map(|(s, r)| format!("{}\t{}", ckpt_escape(s), r)),
+        )?;
+
+        let meta = vec![
+            format!("version\t{}", CKPT_VERSION),
+            format!("mode\t{}", self.checkpoint.mode_tag),
+            format!("phase\t{}", if self.latin_pass { "LAT" } else { "DEV" }),
+            format!("theta\t{}", self.theta),
+            format!("dev_budget\t{}", self.checkpoint.dev_budget),
+            format!("total_budget\t{}", self.checkpoint.total_budget),
+            format!("merges_done\t{}", merges_done),
+            format!("vocab_len\t{}", self.vocab.len()),
+            format!("word_types\t{}", corpus.word_type_count()),
+            format!("seed_max_len\t{}", self.checkpoint.seed_max_len),
+            format!("use_probabilistic_k\t{}", if self.use_probabilistic_k { 1 } else { 0 }),
+            format!("root_set_cap\t{}", self.root_set_cap),
+            format!("corpus_fingerprint\t{}", corpus.origin_fingerprint()),
+            format!("paradigm_fingerprint\t{}", self.checkpoint.paradigm_fingerprint),
+        ];
+        write_lines(step.join("meta.tsv"), meta.into_iter())?;
+
+        // Commit.
+        write_lines(step.join(CKPT_COMPLETE), std::iter::once(String::new()))?;
+        write_lines(root.join(CKPT_LATEST), std::iter::once(step_name))?;
+
+        // Rotate.
+        if self.checkpoint.keep > 0 {
+            let dirs = step_dirs(&root);
+            if dirs.len() > self.checkpoint.keep {
+                for d in &dirs[..dirs.len() - self.checkpoint.keep] {
+                    let _ = fs::remove_dir_all(d);
+                }
+            }
+        }
+        Ok(Some(step))
+    }
+}
+
+/// Resolve the newest valid checkpoint under `root`. Falls back to scanning for
+/// the highest `step_*` carrying COMPLETE if LATEST is missing or points at a
+/// directory that was never committed.
+fn resolve_latest(root: &Path) -> Option<PathBuf> {
+    let named = fs::read_to_string(root.join(CKPT_LATEST))
+        .ok()
+        .map(|s| root.join(s.trim()))
+        .filter(|p| p.join(CKPT_COMPLETE).exists());
+    if named.is_some() {
+        return named;
+    }
+    step_dirs(root)
+        .into_iter()
+        .rev()
+        .find(|p| p.join(CKPT_COMPLETE).exists())
+}
+
+fn load_meta(step: &Path) -> std::io::Result<CheckpointMeta> {
+    let kv = read_kv(step.join("meta.tsv"))?;
+    let g = |k: &str| kv.get(k).cloned().unwrap_or_default();
+    let gu = |k: &str| g(k).parse::<u64>().unwrap_or(0);
+    let gz = |k: &str| g(k).parse::<usize>().unwrap_or(0);
+    Ok(CheckpointMeta {
+        version: g("version"),
+        mode_tag: g("mode"),
+        phase_latin: g("phase") == "LAT",
+        theta: gu("theta"),
+        dev_budget: gz("dev_budget"),
+        total_budget: gz("total_budget"),
+        merges_done: gu("merges_done"),
+        vocab_len: gz("vocab_len"),
+        word_types: gz("word_types"),
+        seed_max_len: gz("seed_max_len"),
+        use_probabilistic_k: gu("use_probabilistic_k") == 1,
+        root_set_cap: gz("root_set_cap"),
+        corpus_fingerprint: gu("corpus_fingerprint"),
+        paradigm_fingerprint: gu("paradigm_fingerprint"),
+    })
+}
+
+fn load_vocab_rows(step: &Path) -> std::io::Result<Vec<CkptRow>> {
+    let f = fs::File::open(step.join("vocab.tsv"))?;
+    let mut rows = Vec::new();
+    for line in BufReader::new(f).lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let c: Vec<&str> = line.splitn(8, '\t').collect();
+        if c.len() < 8 {
+            continue;
+        }
+        let roots = if c[5] == "-" {
+            Vec::new()
+        } else {
+            c[5].split(',').filter_map(|s| s.parse::<RootId>().ok()).collect()
+        };
+        rows.push(CkptRow {
+            id: c[0].parse().unwrap_or(0),
+            kind: c[1].chars().next().unwrap_or('O'),
+            script: script_from_tag(c[2].chars().next().unwrap_or('M')),
+            flags: c[3].parse().unwrap_or(0),
+            aux: c[4].to_string(),
+            roots,
+            conf: if c[6] == "-" { None } else { c[6].parse::<f64>().ok() },
+            surface: ckpt_unescape(c[7]),
+        });
+    }
+    Ok(rows)
+}
+
+fn load_corpus_words(step: &Path) -> std::io::Result<Vec<(Frequency, Vec<TokenId>)>> {
+    let f = fs::File::open(step.join("corpus.tsv"))?;
+    let mut out = Vec::new();
+    for line in BufReader::with_capacity(1 << 20, f).lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.splitn(2, '\t');
+        let count: Frequency = match it.next().and_then(|s| s.parse().ok()) {
+            Some(c) => c,
+            None => continue,
+        };
+        let toks: Vec<TokenId> = it
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|s| s.parse::<TokenId>().ok())
+            .collect();
+        if !toks.is_empty() {
+            out.push((count, toks));
+        }
+    }
+    Ok(out)
+}
+
+fn load_num_map<K, V, P>(path: P) -> HashMap<K, V>
+where
+    K: std::str::FromStr + std::hash::Hash + Eq,
+    V: std::str::FromStr,
+    P: AsRef<Path>,
+{
+    let mut m = HashMap::new();
+    if let Ok(f) = fs::File::open(path) {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
+            let mut it = line.splitn(2, '\t');
+            if let (Some(k), Some(v)) = (it.next(), it.next()) {
+                if let (Ok(k), Ok(v)) = (k.parse::<K>(), v.parse::<V>()) {
+                    m.insert(k, v);
+                }
+            }
+        }
+    }
+    m
+}
+
+fn load_lexicon(step: &Path) -> HashMap<String, RootId> {
+    let mut m = HashMap::new();
+    if let Ok(f) = fs::File::open(step.join("lexicon.tsv")) {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
+            let mut it = line.splitn(2, '\t');
+            if let (Some(s), Some(r)) = (it.next(), it.next()) {
+                if let Ok(r) = r.parse::<RootId>() {
+                    m.insert(ckpt_unescape(s), r);
+                }
+            }
+        }
+    }
+    m
 }
 
 // ============================================================================
@@ -1738,7 +2408,30 @@ pub struct PyHimalayanTokenization {
 }
 
 impl PyHimalayanTokenization {
-    fn make_trainer(&mut self) -> ConstrainedBPETrainer {
+    /// [EQ-10] Assemble Theta. `dev_budget`/`total_budget` are recorded so a
+    /// resumed run knows whether it still owes a Phase-4 Latin pass.
+    fn ckpt_config(
+        &self,
+        dir: Option<String>,
+        every: u64,
+        keep: usize,
+        dev_budget: usize,
+        total_budget: usize,
+    ) -> CheckpointConfig {
+        CheckpointConfig {
+            dir,
+            every,
+            keep,
+            mode_tag: self.inner.normalizer.mode().tag().to_string(),
+            seed_max_len: self.inner.seed_max_len,
+            dev_budget,
+            total_budget,
+            paradigm_fingerprint: fingerprint_paradigms(&self.inner.paradigm_registry),
+            lexicon: self.inner.lexicon.clone(),
+        }
+    }
+
+    fn make_trainer(&mut self, ckpt: CheckpointConfig) -> ConstrainedBPETrainer {
         let mut t = ConstrainedBPETrainer::new(
             std::mem::take(&mut self.inner.vocab),
             std::mem::take(&mut self.inner.paradigm_registry),
@@ -1747,6 +2440,7 @@ impl PyHimalayanTokenization {
         t.token_weight = self.inner.token_weight.clone();
         t.use_probabilistic_k = self.inner.use_probabilistic_k;
         t.root_set_cap = self.inner.root_set_cap;
+        t.checkpoint = ckpt;
         t
     }
 
@@ -2058,7 +2752,8 @@ impl PyHimalayanTokenization {
     ) -> PyResult<usize> {
         self.tag_roots();
         let mut corpus = Corpus::from_sequences(sequences, vocab_budget);
-        let mut trainer = self.make_trainer();
+        let cfg = self.ckpt_config(None, 0, 0, vocab_budget, vocab_budget);
+        let mut trainer = self.make_trainer(cfg);
         trainer.theta = theta;
         trainer.train(&mut corpus, vocab_budget, 0);
         self.reclaim(trainer);
@@ -2092,14 +2787,17 @@ impl PyHimalayanTokenization {
         }
 
         let mut corpus = Corpus::from_word_counts(counts, vocab_budget);
-        let mut trainer = self.make_trainer();
+        let cfg = self.ckpt_config(None, 0, 0, vocab_budget, vocab_budget);
+        let mut trainer = self.make_trainer(cfg);
         trainer.theta = theta;
         trainer.train(&mut corpus, vocab_budget, 0);
         self.reclaim(trainer);
         Ok(self.inner.vocab.len())
     }
 
-    #[pyo3(signature = (path, vocab_budget, theta, min_word_freq=1, progress_lines=500000, progress_merges=1000))]
+    #[pyo3(signature = (path, vocab_budget, theta, min_word_freq=1, progress_lines=500000,
+                        progress_merges=1000, checkpoint_dir=None, checkpoint_every=0,
+                        checkpoint_keep=3))]
     fn train_from_file(
         &mut self,
         py: Python<'_>,
@@ -2109,6 +2807,9 @@ impl PyHimalayanTokenization {
         min_word_freq: u64,
         progress_lines: u64,
         progress_merges: u64,
+        checkpoint_dir: Option<String>,
+        checkpoint_every: u64,
+        checkpoint_keep: usize,
     ) -> PyResult<usize> {
         let (counts, lines_done, word_occ, build_secs) =
             self.build_word_counts(py, &path, min_word_freq, progress_lines, None)?;
@@ -2119,7 +2820,9 @@ impl PyHimalayanTokenization {
 
         self.tag_roots();
         let mut corpus = Corpus::from_word_counts(counts, vocab_budget);
-        let mut trainer = self.make_trainer();
+        let cfg = self.ckpt_config(
+            checkpoint_dir, checkpoint_every, checkpoint_keep, vocab_budget, vocab_budget);
+        let mut trainer = self.make_trainer(cfg);
         trainer.theta = theta;
         let final_vocab = py.allow_threads(|| {
             trainer.train(&mut corpus, vocab_budget, progress_merges);
@@ -2129,7 +2832,9 @@ impl PyHimalayanTokenization {
         Ok(final_vocab)
     }
 
-    #[pyo3(signature = (path, dev_budget, lat_budget, theta, min_word_freq=1, progress_lines=500000, progress_merges=1000))]
+    #[pyo3(signature = (path, dev_budget, lat_budget, theta, min_word_freq=1,
+                        progress_lines=500000, progress_merges=1000, checkpoint_dir=None,
+                        checkpoint_every=0, checkpoint_keep=3))]
     fn train_bilingual_from_file(
         &mut self,
         py: Python<'_>,
@@ -2140,6 +2845,9 @@ impl PyHimalayanTokenization {
         min_word_freq: u64,
         progress_lines: u64,
         progress_merges: u64,
+        checkpoint_dir: Option<String>,
+        checkpoint_every: u64,
+        checkpoint_keep: usize,
     ) -> PyResult<usize> {
         let (counts, lines_done, word_occ, build_secs) =
             self.build_word_counts(py, &path, min_word_freq, progress_lines, None)?;
@@ -2151,7 +2859,9 @@ impl PyHimalayanTokenization {
         self.tag_roots();
         let total_budget = dev_budget + lat_budget;
         let mut corpus = Corpus::from_word_counts(counts, total_budget);
-        let mut trainer = self.make_trainer();
+        let cfg = self.ckpt_config(
+            checkpoint_dir, checkpoint_every, checkpoint_keep, dev_budget, total_budget);
+        let mut trainer = self.make_trainer(cfg);
         trainer.theta = theta;
 
         let final_vocab = py.allow_threads(|| {
@@ -2176,7 +2886,9 @@ impl PyHimalayanTokenization {
         Ok(final_vocab)
     }
 
-    #[pyo3(signature = (path, lat_budget, min_word_freq=1, progress_lines=500000, progress_merges=1000))]
+    #[pyo3(signature = (path, lat_budget, min_word_freq=1, progress_lines=500000,
+                        progress_merges=1000, checkpoint_dir=None, checkpoint_every=0,
+                        checkpoint_keep=3))]
     fn train_latin_from_file(
         &mut self,
         py: Python<'_>,
@@ -2185,6 +2897,9 @@ impl PyHimalayanTokenization {
         min_word_freq: u64,
         progress_lines: u64,
         progress_merges: u64,
+        checkpoint_dir: Option<String>,
+        checkpoint_every: u64,
+        checkpoint_keep: usize,
     ) -> PyResult<usize> {
         if self.inner.vocab.is_empty() {
             return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -2201,13 +2916,164 @@ impl PyHimalayanTokenization {
 
         let target = self.inner.vocab.len() + lat_budget;
         let mut corpus = Corpus::from_word_counts(counts, target);
-        let mut trainer = self.make_trainer();
+        let start = self.inner.vocab.len();
+        let cfg = self.ckpt_config(
+            checkpoint_dir, checkpoint_every, checkpoint_keep, start, target);
+        let mut trainer = self.make_trainer(cfg);
         trainer.theta = 100;
         trainer.latin_pass = true;
         let final_vocab = py.allow_threads(|| {
             trainer.train(&mut corpus, target, progress_merges);
             trainer.vocab.len()
         });
+        self.reclaim(trainer);
+        Ok(final_vocab)
+    }
+
+    // ---------------- checkpoints  [EQ-10] ----------------
+
+    /// Inspect the newest valid checkpoint without loading it. Useful for a
+    /// launcher that decides between "start fresh" and "resume".
+    fn checkpoint_info(&self, py: Python<'_>, dir: String) -> PyResult<Option<Py<PyDict>>> {
+        let root = PathBuf::from(&dir);
+        let step = match resolve_latest(&root) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let meta = load_meta(&step).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("read meta: {}", e))
+        })?;
+        let d = PyDict::new(py);
+        d.set_item("path", step.display().to_string())?;
+        d.set_item("version", meta.version)?;
+        d.set_item("mode", meta.mode_tag)?;
+        d.set_item("phase", if meta.phase_latin { "LAT" } else { "DEV" })?;
+        d.set_item("merges_done", meta.merges_done)?;
+        d.set_item("vocab_len", meta.vocab_len)?;
+        d.set_item("word_types", meta.word_types)?;
+        d.set_item("theta", meta.theta)?;
+        d.set_item("dev_budget", meta.dev_budget)?;
+        d.set_item("total_budget", meta.total_budget)?;
+        d.set_item("corpus_fingerprint", meta.corpus_fingerprint)?;
+        d.set_item("paradigm_fingerprint", meta.paradigm_fingerprint)?;
+        Ok(Some(d.into()))
+    }
+
+    /// [EQ-10] Restore Sigma_n and continue.
+    ///
+    /// The source corpus is NOT re-read: C_n is loaded from the checkpoint,
+    /// because re-encoding the corpus with V_n gives a different partition than
+    /// applying merges 1..n in order. For the same reason `tag_roots()` is NOT
+    /// called here — that would overwrite path-dependent narrowed root sets with
+    /// un-narrowed registry ones and silently loosen `Morph`.
+    ///
+    /// Guards, all overridable but none silent:
+    ///   - folding mode must match (ids mean different things per mode);
+    ///   - paradigm fingerprint must match (P is a build input, re-supplied by
+    ///     the driver via add_paradigm before resuming, not serialized).
+    ///
+    /// Phase handling: a checkpoint taken during the Devanagari pass resumes
+    /// Phase 3 to `dev_budget` and then runs the Phase 4 Latin pass to
+    /// `total_budget`; one taken during the Latin pass resumes Phase 4 only.
+    #[pyo3(signature = (dir, progress_merges=1000, checkpoint_every=0, checkpoint_keep=3,
+                        allow_mode_mismatch=false, allow_paradigm_mismatch=false))]
+    fn resume_from_checkpoint(
+        &mut self,
+        py: Python<'_>,
+        dir: String,
+        progress_merges: u64,
+        checkpoint_every: u64,
+        checkpoint_keep: usize,
+        allow_mode_mismatch: bool,
+        allow_paradigm_mismatch: bool,
+    ) -> PyResult<usize> {
+        let root = PathBuf::from(&dir);
+        let step = resolve_latest(&root).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!(
+                "no COMPLETE checkpoint under {}",
+                dir
+            ))
+        })?;
+        let ioerr =
+            |e: std::io::Error| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("{}", e));
+
+        let meta = load_meta(&step).map_err(ioerr)?;
+
+        if meta.mode_tag != self.inner.normalizer.mode().tag() && !allow_mode_mismatch {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "checkpoint was built with mode={} but this tokenizer is mode={}. \
+                 Folding mode is a build-time fork; resuming across it produces a \
+                 vocabulary whose ids do not mean what the checkpoint thinks.",
+                meta.mode_tag,
+                self.inner.normalizer.mode().tag()
+            )));
+        }
+
+        let current_fp = fingerprint_paradigms(&self.inner.paradigm_registry);
+        if current_fp != meta.paradigm_fingerprint && !allow_paradigm_mismatch {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "paradigm registry fingerprint {} does not match the checkpoint's {}. \
+                 P is a build input and is not serialized — re-register the SAME \
+                 paradigms with add_paradigm before resuming, or the Morph constraint \
+                 changes mid-run.",
+                current_fp, meta.paradigm_fingerprint
+            )));
+        }
+
+        // --- V_n, R_n, Theta ---
+        let rows = load_vocab_rows(&step).map_err(ioerr)?;
+        self.inner.vocab.import_ckpt_rows(rows);
+        self.inner.seed_max_len = meta.seed_max_len;
+        self.inner.use_probabilistic_k = meta.use_probabilistic_k;
+        self.inner.root_set_cap = meta.root_set_cap;
+        self.inner.token_weight = load_num_map(step.join("weights.tsv"));
+        self.inner.root_prior = load_num_map(step.join("prior.tsv"));
+        self.inner.lexicon = load_lexicon(&step);
+
+        // --- C_n ---
+        let words = load_corpus_words(&step).map_err(ioerr)?;
+        let mut corpus = Corpus::from_checkpoint_words(
+            words,
+            meta.total_budget,
+            meta.corpus_fingerprint,
+        );
+
+        eprintln!(
+            "[resume] {} | phase={} merges={} vocab={} word_types={}",
+            step.display(),
+            if meta.phase_latin { "LAT" } else { "DEV" },
+            meta.merges_done,
+            self.inner.vocab.len(),
+            corpus.word_type_count()
+        );
+
+        let cfg = self.ckpt_config(
+            Some(dir.clone()),
+            checkpoint_every,
+            checkpoint_keep,
+            meta.dev_budget,
+            meta.total_budget,
+        );
+        let mut trainer = self.make_trainer(cfg);
+        trainer.theta = meta.theta;
+        trainer.merges_done = meta.merges_done;
+
+        let dev_budget = meta.dev_budget;
+        let total_budget = meta.total_budget;
+        let phase_latin = meta.phase_latin;
+
+        let final_vocab = py.allow_threads(|| {
+            if !phase_latin {
+                trainer.latin_pass = false;
+                trainer.train(&mut corpus, dev_budget, progress_merges);
+            }
+            if total_budget > dev_budget || phase_latin {
+                trainer.latin_pass = true;
+                trainer.train(&mut corpus, total_budget, progress_merges);
+            }
+            trainer.vocab.len()
+        });
+
         self.reclaim(trainer);
         Ok(final_vocab)
     }
