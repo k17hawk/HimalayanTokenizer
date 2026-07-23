@@ -1,0 +1,91 @@
+{
+  "tokenizer_name": "HimalayanTOK-100K",
+  "actual_vocab_size": 100001,
+  "corpus": "sample.txt",
+  "timestamp": "2026-07-23 14:09:17",
+  "speed_results": {
+    "HimalayanTOK-100K": {
+      "lines_per_sec": 84361.67602591793
+    },
+    "IndicBERT": {
+      "lines_per_sec": 15251.73538007236
+    },
+    "mBERT": {
+      "lines_per_sec": 24306.29469303619
+    },
+    "XLM-R": {
+      "lines_per_sec": 16310.878141719953
+    },
+    "TikToken-cl100k": {
+      "lines_per_sec": 97916.38010184097
+    },
+    "TikToken-o200k": {
+      "lines_per_sec": 129168.87221619388
+    },
+    "Llama-2": {
+      "lines_per_sec": 27777.46498655466
+    }
+  },
+  "stats_results": {
+    "HimalayanTOK-100K": {
+      "total_tokens": 9467,
+      "avg_tokens_per_word": 1.6062097047845267,
+      "compression_ratio": 4.268194781873878,
+      "unk_rate": 0.0
+    },
+    "IndicBERT": {
+      "total_tokens": 10766,
+      "avg_tokens_per_word": 1.826603325415677,
+      "compression_ratio": 3.753204532788408,
+      "unk_rate": 0.9474270852684377
+    },
+    "mBERT": {
+      "total_tokens": 11940,
+      "avg_tokens_per_word": 2.025788937902952,
+      "compression_ratio": 3.384170854271357,
+      "unk_rate": 0.10050251256281408
+    },
+    "XLM-R": {
+      "total_tokens": 9532,
+      "avg_tokens_per_word": 1.6172378690193416,
+      "compression_ratio": 4.239089383130508,
+      "unk_rate": 0.0
+    },
+    "TikToken-cl100k": {
+      "total_tokens": 20422,
+      "avg_tokens_per_word": 3.4648795385137428,
+      "compression_ratio": 1.9786015081774557,
+      "unk_rate": 0.0
+    },
+    "TikToken-o200k": {
+      "total_tokens": 10043,
+      "avg_tokens_per_word": 1.7039362063115033,
+      "compression_ratio": 4.023399382654585,
+      "unk_rate": 0.0
+    },
+    "Llama-2": {
+      "total_tokens": 22507,
+      "avg_tokens_per_word": 3.81862911435358,
+      "compression_ratio": 1.7953081263606878,
+      "unk_rate": 0.0
+    }
+  },
+  "coverage_results": {
+    "HimalayanTOK-100K": 100.0,
+    "IndicBERT": 64.0625,
+    "mBERT": 67.1875,
+    "XLM-R": 61.71875,
+    "TikToken-cl100k": 13.28125,
+    "TikToken-o200k": 61.71875,
+    "Llama-2": 30.46875
+  },
+  "morph_share": {
+    "HimalayanTOK-100K": 0.0,
+    "IndicBERT": 1.0,
+    "mBERT": 0.7266666666666666,
+    "XLM-R": 0.2333333333333333,
+    "TikToken-cl100k": 0.6857142857142857,
+    "TikToken-o200k": 0.7266666666666666,
+    "Llama-2": 0.6475757575757576
+  }
+}
