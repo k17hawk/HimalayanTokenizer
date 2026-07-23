@@ -48,7 +48,7 @@ jobs:
       - name: Install maturin and build the extension
         run: |
           pip install maturin
-          maturin develop --release
+          maturin develop --release --extras dev
 
       - name: Install package and dev dependencies
         run: |
