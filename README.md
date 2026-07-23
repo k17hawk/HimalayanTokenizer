@@ -1,5 +1,4 @@
-# HimalayanTokenizer
-# NepBPE v4 — Complete Equation Set
+# HimalayanTokenizer v4 — Complete Equation Set
 
 v4 = v2 (corrected) + Part II extensions **in their implemented form**. The change
 from v3 is not new theory: it is that nine equations which v2/v3 stated but the
@@ -40,7 +39,7 @@ Idempotent(Fold_O)  ⟺  ∀ (p→r) ∈ Fold_O, ∀ (q→·) ∈ Fold_O :  q �
 
 **Losslessness order:** `N_OCR ≺ N_LM` strictly (`N_OCR` distinguishes सँग / संग /
 सङ्ग and keeps ZWJ). Mode is frozen into the vocabulary; the vocab file carries
-`# nepbpe-v4 mode=…` and loading under the other mode is a hard error.
+`# HimalyanTokenizer-v4 mode=…` and loading under the other mode is a hard error.
 
 ---
 
@@ -456,7 +455,7 @@ BPC                = ( Σ_t −log₂ p(t) ) / |N(s)|_bytes               # mode
 ```
 
 Baselines at matched vocab: byte-BPE · SentencePiece-BPE · SP-Unigram · Morfessor ·
-an existing Indic tokenizer · NepBPE. Ablations: `ParadigmEmb {off, random, P-seeded}`
+an existing Indic tokenizer · HimalyanTokenizer. Ablations: `ParadigmEmb {off, random, P-seeded}`
 (headline), `Morph {existential-hard, +probabilistic-K, off}`, `Folding {N_LM, N_OCR}`.
 
 ---
@@ -529,3 +528,287 @@ New in v4:
    vocabularies are identical id-for-id. §3.5 says this must hold — if it does not,
    something in `Σ` is not being persisted, and the failure will otherwise only
    surface as a quietly degraded vocabulary days into a run.
+
+
+
+# HimalayanTOK — Nepali
+
+An akshara-aware, script-tiered BPE tokenizer for Nepali, written in Rust with Python
+bindings. Perfect Devanagari coverage, zero UNK, and a hard guarantee that no token
+ever splits a matra from its consonant or breaks a conjunct.
+
+**Status: working resource tokenizer. The morphology layer is built but not yet
+activated — see [Known Limitations](#known-limitations) before you cite anything.**
+
+---
+
+## What it is
+
+Most multilingual tokenizers treat Nepali as a byte stream that happens to be
+Devanagari. They split `काठमाडौं` mid-conjunct, strip the matra off its consonant, and
+spend four tokens on a word that should cost one. HimalayanTOK constrains BPE so those
+failures are impossible by construction rather than unlikely in practice.
+
+Four phases:
+
+| Phase | What it does |
+|---|---|
+| 1. Normalization `N` | NFC → orthographic folding (सँग/संग/सङ्ग → one form) → ZWJ handling. ZWNJ preserved as an explicit token. |
+| 2. Akshara DFA | Segments Devanagari into well-formed aksharas. Matras bind to their consonant; conjuncts stay whole. Malformed bytes get a 256-token byte-fallback alphabet. |
+| 3. Constrained BPE | Merges are admissible only if they pass a script gate and a paradigm check. Priority is **lexicographic**: any Devanagari merge outranks any punctuation merge regardless of frequency. |
+| 4. Latin pass | Separate unconstrained BPE over Latin runs. No token can span two scripts. |
+
+The full equation set — including what the design provably *cannot* do — is in
+[`NepBPE_v4_equations.md`](./NepBPE_v4_equations.md).
+
+---
+
+## Benchmark
+
+Nepali evaluation corpus, seven tokenizers, off-the-shelf.
+
+| Tokenizer | Vocab | Tok/Wrd | Bytes/Tok | UNK% | Deva% | Speed | Morph.Share |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **HimalayanTOK-100K** | 100,001 | **1.606** | 6.97 | 0.00% | **100.0%** | 84,362/s | **0.000** |
+| IndicBERT | 200,000 | 1.827 | 6.13 | 0.95% | 64.1% | 15,252/s | 1.000 |
+| mBERT | 119,547 | 2.026 | 5.53 | 0.10% | 67.2% | 24,306/s | 0.727 |
+| XLM-R | 250,002 | 1.617 | 6.93 | 0.00% | 61.7% | 16,311/s | 0.233 |
+| TikToken-cl100k | 100,277 | 3.465 | 3.23 | 0.00% | 13.3% | 97,916/s | 0.686 |
+| TikToken-o200k | 200,019 | 1.704 | 6.57 | 0.00% | 61.7% | 129,169/s | 0.727 |
+| Llama-2 | 32,000 | 3.819 | 2.93 | 0.00% | 30.5% | 27,777/s | 0.648 |
+
+Segmentation of `मेरो नाम राम हो र म काठमाडौंमा बस्छु`:
+
+```
+HimalayanTOK     मेरो | नाम | राम | हो | र | म | काठमाडौंमा | बस्छु
+XLM-R            मेरो | नाम | राम | हो | र | म | काठमाडौंमा | बस | ्छु      ← orphan halant
+IndicBERT        मर | नम | रम | ह | र | म | कठ | म | डम | बस | छ           ← matras dropped entirely
+Llama-2          म|े|र|ो| |न|ा|म| |र|ा|म| ... (43 tokens)
+```
+
+### Read the caveats before quoting the table
+
+- **Vocabulary budgets are not matched.** Fertility improves mechanically with vocab
+  size. HimalayanTOK's 1.606 tok/word at 100K against XLM-R's 1.617 at 250K is
+  suggestive, not a result. A publishable comparison requires retraining every
+  baseline at the same budget on the same corpus.
+- **Speed is not an algorithmic claim.** It's Rust against Python wrappers. (The
+  benchmark output labels this "C++" — that's a mislabel; the implementation is Rust.)
+- **There is no BPC number here.** Tokens/word is a proxy. The real question — does a
+  language model trained on these tokens compress Nepali better — needs bits-per-character
+  from an actual trained LM. Perplexity will not do; token inventories differ, so PPL
+  comparisons across tokenizers are meaningless.
+
+---
+
+## Known limitations
+
+### The morphology layer is inactive
+
+`Morph.Share = 0.000` — the worst score in the benchmark. HimalayanTOK shares **zero**
+tokens between paired verb conjugations where every other tokenizer shares at least
+some:
+
+| Pair | HimalayanTOK | IndicBERT | mBERT |
+|---|---|---|---|
+| जान्छु / जान्छौ | 0 shared (1, 13 tokens) | 2 shared | 2 shared |
+| खान्छु / खान्छौ | 0 shared (1, 13 tokens) | 3 shared | 2 shared |
+| गर्छु / गर्छौ | 0 shared (1, 1 tokens) | 2 shared | 3 shared |
+
+This is not a subtle tuning problem. Two things are visibly wrong:
+
+1. **The paradigm machinery is unpopulated.** `Morph` has a `RootSet(a) = ∅ ⇒ 1`
+   clause, which is correct — it stops paradigm licensing from blocking every merge of
+   every ordinary token. But with no FST loaded, *every* token has an empty RootSet, so
+   the constraint is never exercised and the tokenizer is behaving as plain frequency
+   BPE with a script gate. The morphology is architecture, not behavior.
+
+2. **The 13-token forms are byte fallback firing.** `जान्छु` costs 1 token and `जान्छौ`
+   costs 13. A six-character word exploding to 13 tokens means the encoder found no
+   vocabulary entry and spelled it out byte by byte. The frequent inflection was
+   memorized whole; the less frequent one fell off a cliff. That's the exact failure
+   mode morphological segmentation is supposed to prevent, and it shows the base
+   akshara inventory does not cover the corpus.
+
+**What fixes it:** the FST (E5 in the roadmap). One resource populates the Phase-3
+paradigm constraint, seeds the Phase-5 `U` map, and supplies E1's root prior. Until
+it exists, describe this project as a fast frequency-BPE resource tokenizer with strong
+Devanagari coverage — not as a morphological tokenizer.
+
+### Other things to know
+
+- **Vocabulary is 100,001, not 64K.** If you see "64K" anywhere in older docs, it's stale.
+- **Byte-fallback rate is the number to watch.** Run `harvest_aksharas` before training
+  so the base akshara inventory actually covers your corpus. An unseen akshara is spelled
+  out in bytes — correct, but expensive.
+- **The tokenizer cannot be patched after pretraining.** Folding mode, paradigm table,
+  and vocabulary are frozen into token IDs. Every one of those is a pre-compute gate.
+- **Loaded vocabularies are encode/decode-ready, not training-ready.** `V_strict`,
+  `V_ambiguous`, and root sets are not restored from a TSV.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/<you>/HimalayanTOK-Nepali
+cd HimalayanTOK-Nepali
+pip install maturin
+maturin develop --release
+```
+
+Requires Rust 1.70+ and Python 3.8+.
+
+---
+
+## Quickstart
+
+### Train
+
+```python
+from HimalayanTOK_Nepali import PyHimalayanTOK_Nepali
+
+tok = PyHimalayanTOK_Nepali(
+    folding_rules=[("सङ्ग", "संग"), ("सँग", "संग")],
+    mode="LM",                      # build-time fork: "LM" or "OCR", never a runtime flag
+)
+
+# Check N is idempotent for your rule set — empty list means it is.
+assert tok.validate_folding_rules() == []
+
+# Harvest the akshara inventory the DFA actually produces on YOUR corpus.
+# Skipping this is the main cause of byte-fallback blowups.
+aksharas = tok.harvest_aksharas("corpus.txt", min_freq=5)
+
+tok.initialize_vocab(
+    aksharas=aksharas,
+    seed_morphemes=["हरू", "गा.वि.स."],
+    punctuation=[".", ",", "।", "॥", "?", "!"],
+    v_strict=["हरू"],               # unconditionally frozen, terminal
+    v_ambiguous=[],                  # frequency-gated at θ
+)
+
+tok.train_bilingual_from_file(
+    "corpus.txt",
+    dev_budget=40_000,
+    lat_budget=8_000,
+    theta=100,
+)
+
+tok.save_vocab_tsv("vocab.tsv")     # stamped with mode=LM
+```
+
+### Encode
+
+```python
+tok = PyHimalayanTOK_Nepali(mode="LM")
+tok.load_vocab_tsv("vocab.tsv")     # refuses a vocab built under a different mode
+
+ids = tok.encode("मेरो नाम राम हो।")
+print(tok.decode(ids))              # == tok.normalize(original)
+assert tok.verify_roundtrip("मेरो नाम राम हो।")
+```
+
+### Evaluate
+
+```python
+stats = tok.corpus_stats(open("heldout.txt").read().splitlines())
+print(stats["fertility"])            # tokens per whitespace word
+print(stats["byte_fallback_rate"])   # should be near zero
+print(stats["roundtrip_pass_rate"])  # should be exactly 1.0
+```
+
+`corpus_stats` runs through the production encode path, so evaluation cannot drift
+from training. BPC is deliberately absent — it needs model log-probs. Compute it as
+`(Σ −log₂ p(token)) / bytes`, using the byte count this returns.
+
+### Morphology (once you have an FST)
+
+```python
+tok.add_paradigm(root_id=0, transitions={"जा": ["न्छु", "न्छौ", "न्छ"]})
+tok.set_root_prior({0: 0.31, 1: 0.12})       # from FST analysis over the corpus
+tok.enable_probabilistic_k(True, root_set_cap=16)
+tok.assign_initial_roots()
+
+# Phase 5: U : TokenID -> RootID. Lexicon first — it's the only thing that can
+# express suppletion (गयो shares no substring with जानु).
+tok.set_lexicon({"गयो": 0, "भयो": 1})
+tok.build_paradigm_embedding()
+
+u_ids = tok.paradigm_embedding_ids()          # -1 = ⊥, feed to nn.Embedding
+script_ids = tok.script_ids()                 # 0=DEV 1=LAT 2=PUN 3=FMT 4=MAL
+```
+
+---
+
+## Guarantees
+
+Exact, by construction:
+
+- No token splits a matra from its consonant or breaks a conjunct — token boundaries
+  are a subset of akshara boundaries at both training and inference.
+- Zero tokens span more than one script.
+- `Decode(Encode(s)) = N(s)` for **all** byte inputs, garbage included.
+- `N(N(s)) = N(s)`.
+- `V_strict` morphemes are frozen and terminal; `V_ambiguous` extends only above θ.
+- Devanagari always outranks punctuation in merge selection, regardless of frequency.
+- Merge order is bit-reproducible across runs.
+
+Sound but data-dependent: no merge is licensed by zero consistent roots. The filter is
+loose while `RootSet` is large and tightens as narrowing disambiguates.
+
+Provably out of scope — no equation of this family can do these:
+
+- Unifying non-contiguous surfaces (आयो ↔ आउँछु, हुनु → भयो). Delegated to the learned
+  `U` map plus a lexicon.
+- Recovering boundaries erased by sandhi (विद्या + आलय → विद्यालय). The information is
+  destroyed in the surface form.
+- Context-dependent segmentation. Scoring has zero sentence context by construction;
+  representing ambiguity needs a lattice handed to the model, a different object entirely.
+
+---
+
+## Roadmap
+
+| | Item | Status |
+|---|---|---|
+| **E5** | FST behind `P(root)` — foma/HFST, determinized + minimized. **The keystone.** One resource serves the Phase-3 constraint, the Phase-5 `U` seeding, and E1's prior. | **Blocking everything below** |
+| E1 | Probabilistic RootSet in the priority key. Implemented, inert without E5's prior. | Waiting on E5 |
+| E2 | Semi-automatic seed induction. Induced units enter as `V_ambiguous` only; promotion to `V_strict` needs human sign-off. | Implemented |
+| E3 | Folding modes as a build-time fork (`N_LM` / `N_OCR`), stamped into the vocab. | Implemented |
+| E4 | Evaluation protocol: matched vocab, BPC not PPL, Morfessor + Indic baselines, morpheme-boundary F1, ParadigmEmb ablation as headline. | Partial — intrinsic metrics only |
+
+**First milestone that matters: an FST coverage number on a real corpus.** An FST that
+analyzes 60% of tokens leaves 40% on the loose existential path, and no amount of
+probabilistic ranking rescues that. Measure coverage before optimizing anything else.
+
+---
+
+## Before you publish
+
+1. Retrain every baseline at a matched vocabulary budget on the same corpus. The
+   current comparison is off-the-shelf and cannot support a fertility claim.
+2. Report bits-per-character from a trained LM. Not perplexity — token inventories
+   differ, so lower PPL can be pure segmentation artifact.
+3. Run the ParadigmEmb ablation (`off` / `random-init` / `P-seeded`). Without it the
+   central claim — that a paradigm-seeded embedding learns to unify आयो ↔ आउँछु — is
+   unsupported.
+4. Either fix the FST-to-tokenizer pipeline, or reframe the contribution as a
+   frequency-BPE resource with strong Devanagari coverage. Both are defensible. Claiming
+   morphological segmentation while `Morph.Share = 0.000` is not.
+
+---
+
+## License
+
+MIT.
+
+## Citation
+
+```bibtex
+@software{himalayantok_nepali,
+  title  = {HimalayanTOK: An Akshara-Aware Constrained BPE Tokenizer for Nepali},
+  year   = {2026},
+  url    = {https://github.com/<you>/HimalayanTOK-Nepali}
+}
+```
