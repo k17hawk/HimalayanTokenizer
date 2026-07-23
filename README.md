@@ -769,7 +769,6 @@ Provably out of scope — no equation of this family can do these:
 ---
 
 ## Roadmap
-
 | | Item | Status |
 |---|---|---|
 | **E5** | FST behind `P(root)` — foma/HFST, determinized + minimized. **The keystone.** One resource serves the Phase-3 constraint, the Phase-5 `U` seeding, and E1's prior. | **Blocking everything below** |
@@ -782,22 +781,7 @@ Provably out of scope — no equation of this family can do these:
 analyzes 60% of tokens leaves 40% on the loose existential path, and no amount of
 probabilistic ranking rescues that. Measure coverage before optimizing anything else.
 
----
 
-## Before you publish
-
-1. Retrain every baseline at a matched vocabulary budget on the same corpus. The
-   current comparison is off-the-shelf and cannot support a fertility claim.
-2. Report bits-per-character from a trained LM. Not perplexity — token inventories
-   differ, so lower PPL can be pure segmentation artifact.
-3. Run the ParadigmEmb ablation (`off` / `random-init` / `P-seeded`). Without it the
-   central claim — that a paradigm-seeded embedding learns to unify आयो ↔ आउँछु — is
-   unsupported.
-4. Either fix the FST-to-tokenizer pipeline, or reframe the contribution as a
-   frequency-BPE resource with strong Devanagari coverage. Both are defensible. Claiming
-   morphological segmentation while `Morph.Share = 0.000` is not.
-
----
 
 ## License
 
