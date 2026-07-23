@@ -43,9 +43,6 @@ dev = [
     "mypy>=1.0",
 ]
 
-[tool.maturin]
-python-source = "python"
-
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
