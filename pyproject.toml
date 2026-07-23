@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "HimalayanTokenization"
+name = "himalayan-tokenizer"
 version = "0.0.1"
 description = "NepBPE v4: a morphological BPE tokenizer for Nepali and Latin scripts"
 readme = "README.md"
@@ -45,7 +45,6 @@ dev = [
 
 [tool.maturin]
 python-source = "python"
-features = ["extension-module"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
