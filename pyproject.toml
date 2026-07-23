@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "himalayan-tokenizer"
-version = "0.1.0"
+version = "0.0.1"
 description = "NepBPE v4: a morphological BPE tokenizer for Nepali and Latin scripts"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,13 +26,13 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "transformers>=5.14.0",  
+    "transformers>=5.14.0",
 ]
-urls = {
-    "Homepage" = "https://github.com/k17hawk/HimalayanTokenizer",
-    "Bug Tracker" = "https://github.com/k17hawk/HimalayanTokenizer/issues",
-    "Repository" = "https://github.com/k17hawk/HimalayanTokenizer",
-}
+
+[project.urls]
+Homepage = "https://github.com/k17hawk/HimalayanTokenizer"
+"Bug Tracker" = "https://github.com/k17hawk/HimalayanTokenizer/issues"
+Repository = "https://github.com/k17hawk/HimalayanTokenizer"
 
 [project.optional-dependencies]
 dev = [
@@ -44,10 +44,7 @@ dev = [
 ]
 
 [tool.maturin]
-# Python wrapper lives in the `python/` directory
 python-source = "python"
-# The Rust module name is `HimalayanTokenization` 
-# Maturin will automatically include it.
 features = ["extension-module"]
 
 [tool.pytest.ini_options]
