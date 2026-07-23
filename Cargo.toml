@@ -1,0 +1,12 @@
+[package]
+name = "HimalyanTokenizer"
+version = "0.0.1"
+edition = "2024"              
+
+[lib]
+name = "HimalayanTokenization"
+crate-type = ["cdylib"]
+
+[dependencies]
+unicode-normalization = "0.1"
+pyo3 = { version = "0.23", features = ["extension-module"] }
