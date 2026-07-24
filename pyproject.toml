@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "himalayan-tokenizer"
-version = "0.0.4"
+version = "v0.0.4"
 description = "NepBPE v4: a morphological BPE tokenizer for Nepali and Latin scripts"
 readme = "README.md"
 requires-python = ">=3.11"
