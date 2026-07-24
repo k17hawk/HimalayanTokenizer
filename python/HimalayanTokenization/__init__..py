@@ -1,4 +1,5 @@
 from HimalayanTokenization import PyHimalayanTokenization
+import HimalayanTokenization
 from importlib.resources import files
 
 def load_default_tokenizer(mode="LM"):

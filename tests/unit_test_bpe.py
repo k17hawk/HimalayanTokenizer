@@ -3,11 +3,11 @@ Unit tests for HimalayanTokenizer (NepBPE v4).
 These tests verify the exact guarantees claimed in the equation set.
 """
 import pytest
-import HimalayanTokenization
+from HimalayanTokenization import PyHimalayanTokenization   
 
 def test_normalization_idempotent():
     """N(s) = N(N(s)) for various inputs."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     cases = [
         "सँग",
         "संग",
@@ -22,14 +22,14 @@ def test_normalization_idempotent():
 
 def test_folding_table_reduces_variants():
     """All variant forms should map to the same canonical string."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     variants = ["सँग", "संग", "सङ्ग"]
     canonical = tok.normalize("सँग")
     for v in variants:
         assert tok.normalize(v) == canonical, f"Variant {repr(v)} not folded"
 
 def test_zwnj_preserved_zwj_stripped():
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok =   PyHimalayanTokenization(mode="LM")
     s = "\u200D\u200C"
     n = tok.normalize(s)
     assert "\u200D" not in n, "ZWJ should be stripped"
@@ -61,7 +61,7 @@ def is_well_formed_akshara(token: str) -> bool:
 
 def test_akshara_integrity_on_devanagari():
     """Test that the DFA produces well‑formed aksharas."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     test_strings = [
         "मेरो",
         "स्कुल",        # conjunct स् + कु + ल  = स्कुल
@@ -79,13 +79,13 @@ def test_akshara_integrity_on_devanagari():
 
 def test_no_matra_split():
     """Specific case: म + ी must be a single token मी."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     aksharas = tok.dfa_tokenize_debug("मी")
     assert aksharas == ["मी"], f"Matra split incorrectly: {aksharas}"
 
 def test_halanta_tokenization():
     """Words ending in halanta (virama) should be tokenized correctly."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     s = "गर्नुहोस्"
     aksharas = tok.dfa_tokenize_debug(s)
     reconstructed = "".join(aksharas)
@@ -97,7 +97,7 @@ def test_halanta_tokenization():
 @pytest.fixture
 def trained_tokenizer():
     """Minimal training on mixed script data to produce a vocabulary."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     # Use aksharas harvested from the corpus (manually listed for reproducibility)
     aksharas = ["मे", "रो", "ना", "म", "हो", "स्कु", "ल", "जा", "न्छु",
                 "हा", "मी", "ने", "पा", "ली", "हौं", "हे", "लो",
@@ -136,7 +136,7 @@ def test_script_purity(trained_tokenizer):
 def test_frozen_strict_never_sub_token():
     """V_strict tokens never appear as a proper substring inside a larger token."""
     strict = {"हरू"}  # plural morpheme
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     aksharas = ["मे", "रो", "हरू", "छन्", "तिम्रो", "पनि"]
     tok.initialize_vocab(
         aksharas=aksharas,
@@ -159,7 +159,7 @@ def test_frozen_strict_never_sub_token():
 # -------------------------------------------------------------------
 def test_text_roundtrip_up_to_normalisation():
     """For valid UTF‑8 text, decode(encode(text)) == N(text)."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     texts = [
         "सँग",
         "संग",
@@ -175,7 +175,7 @@ def test_text_roundtrip_up_to_normalisation():
 
 def test_space_handling():
     """Spaces should be preserved in encoding/decoding."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     text = "hello world"
     ids = tok.encode(text)
     decoded = tok.decode(ids)
@@ -183,7 +183,7 @@ def test_space_handling():
 
 def test_mixed_script_with_spaces():
     """Mixed script text with spaces should roundtrip correctly."""
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     aksharas = ["मे", "रो", "ना", "म", "हो", "हे", "लो"]
     tok.initialize_vocab(
         aksharas=aksharas,

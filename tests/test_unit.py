@@ -1,5 +1,4 @@
-
-import HimalayanTokenization
+from HimalayanTokenization import PyHimalayanTokenization
 def test_import():
-    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+    tok = PyHimalayanTokenization(mode="LM")
     assert tok is not None
