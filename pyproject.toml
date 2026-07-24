@@ -47,9 +47,8 @@ dev = [
 [tool.maturin]
 python-source = "python"
 include = [
-    { path = "python/himalayan_tokenizer/vocab.tsv", format = "wheel" },
+    { path = "python/HimalayanTokenization/vocab.tsv", format = "wheel" },
 ]
-
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
