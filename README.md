@@ -907,6 +907,6 @@ MIT
 @software{HimalyanTokenizer_nepali,
   title  = {HimalyanTokenizer: An Akshara-Aware Constrained BPE Tokenizer for Nepali},
   year   = {2026},
-  url    = {https://github.com/<you>/HimalyanTokenizer-Nepali}
+  url    = {https://github.com/k17hawk/HimalayanTokenizer}
 }
 ```
