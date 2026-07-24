@@ -1,4 +1,4 @@
-# HimalayanTokenizer v4 — Complete Equation Set
+# HimalyanTokenizerenizer v4 — Complete Equation Set
 
 v4 = v2 (corrected) + Part II extensions **in their implemented form**. The change
 from v3 is not new theory: it is that nine equations which v2/v3 stated but the
@@ -531,7 +531,7 @@ New in v4:
 
 
 
-# HimalayanTOK — Nepali
+# HimalyanTokenizer — Nepali
 
 An akshara-aware, script-tiered BPE tokenizer for Nepali, written in Rust with Python
 bindings. Perfect Devanagari coverage, zero UNK, and a hard guarantee that no token
@@ -546,7 +546,7 @@ activated — see [Known Limitations](#known-limitations) before you cite anythi
 
 Most multilingual tokenizers treat Nepali as a byte stream that happens to be
 Devanagari. They split `काठमाडौं` mid-conjunct, strip the matra off its consonant, and
-spend four tokens on a word that should cost one. HimalayanTOK constrains BPE so those
+spend four tokens on a word that should cost one. HimalyanTokenizer constrains BPE so those
 failures are impossible by construction rather than unlikely in practice.
 
 Four phases:
@@ -559,7 +559,7 @@ Four phases:
 | 4. Latin pass | Separate unconstrained BPE over Latin runs. No token can span two scripts. |
 
 The full equation set — including what the design provably *cannot* do — is in
-[`NepBPE_v4_equations.md`](./NepBPE_v4_equations.md).
+[`HimalyanTokenizer_v4_equations.md`](./HimalyanTokenizer_v4_equations.md).
 
 ---
 
@@ -569,7 +569,7 @@ Nepali evaluation corpus, seven tokenizers, off-the-shelf.
 
 | Tokenizer | Vocab | Tok/Wrd | Bytes/Tok | UNK% | Deva% | Speed | Morph.Share |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| **HimalayanTOK-100K** | 100,001 | **1.606** | 6.97 | 0.00% | **100.0%** | 84,362/s | **0.000** |
+| **HimalyanTokenizer-100K** | 100,001 | **1.606** | 6.97 | 0.00% | **100.0%** | 84,362/s | **0.000** |
 | IndicBERT | 200,000 | 1.827 | 6.13 | 0.95% | 64.1% | 15,252/s | 1.000 |
 | mBERT | 119,547 | 2.026 | 5.53 | 0.10% | 67.2% | 24,306/s | 0.727 |
 | XLM-R | 250,002 | 1.617 | 6.93 | 0.00% | 61.7% | 16,311/s | 0.233 |
@@ -580,7 +580,7 @@ Nepali evaluation corpus, seven tokenizers, off-the-shelf.
 Segmentation of `मेरो नाम राम हो र म काठमाडौंमा बस्छु`:
 
 ```
-HimalayanTOK     मेरो | नाम | राम | हो | र | म | काठमाडौंमा | बस्छु
+HimalyanTokenizer     मेरो | नाम | राम | हो | र | म | काठमाडौंमा | बस्छु
 XLM-R            मेरो | नाम | राम | हो | र | म | काठमाडौंमा | बस | ्छु      ← orphan halant
 IndicBERT        मर | नम | रम | ह | र | म | कठ | म | डम | बस | छ           ← matras dropped entirely
 Llama-2          म|े|र|ो| |न|ा|म| |र|ा|म| ... (43 tokens)
@@ -589,7 +589,7 @@ Llama-2          म|े|र|ो| |न|ा|म| |र|ा|म| ... (43 tokens)
 ### Read the caveats before quoting the table
 
 - **Vocabulary budgets are not matched.** Fertility improves mechanically with vocab
-  size. HimalayanTOK's 1.606 tok/word at 100K against XLM-R's 1.617 at 250K is
+  size. HimalyanTokenizer's 1.606 tok/word at 100K against XLM-R's 1.617 at 250K is
   suggestive, not a result. A publishable comparison requires retraining every
   baseline at the same budget on the same corpus.
 - **Speed is not an algorithmic claim.** It's Rust against Python wrappers. (The
@@ -605,11 +605,11 @@ Llama-2          म|े|र|ो| |न|ा|म| |र|ा|म| ... (43 tokens)
 
 ### The morphology layer is inactive
 
-`Morph.Share = 0.000` — the worst score in the benchmark. HimalayanTOK shares **zero**
+`Morph.Share = 0.000` — the worst score in the benchmark. HimalyanTokenizer shares **zero**
 tokens between paired verb conjugations where every other tokenizer shares at least
 some:
 
-| Pair | HimalayanTOK | IndicBERT | mBERT |
+| Pair | HimalyanTokenizer | IndicBERT | mBERT |
 |---|---|---|---|
 | जान्छु / जान्छौ | 0 shared (1, 13 tokens) | 2 shared | 2 shared |
 | खान्छु / खान्छौ | 0 shared (1, 13 tokens) | 3 shared | 2 shared |
@@ -651,8 +651,8 @@ Devanagari coverage — not as a morphological tokenizer.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/HimalayanTOK-Nepali
-cd HimalayanTOK-Nepali
+git clone https://github.com/k17hawk/HimalayanTokenizer.git
+cd HimalayanTokenizer
 pip install maturin
 maturin develop --release
 ```
@@ -663,81 +663,186 @@ Requires Rust 1.70+ and Python 3.8+.
 
 ## Quickstart
 
+
+### Example usage
 ### Train
 
 ```python
-from HimalayanTOK_Nepali import PyHimalayanTOK_Nepali
+import HimalayanTokenization
+import time
+import os
+import subprocess
+import sys
 
-tok = PyHimalayanTOK_Nepali(
-    folding_rules=[("सङ्ग", "संग"), ("सँग", "संग")],
-    mode="LM",                      # build-time fork: "LM" or "OCR", never a runtime flag
-)
+# ============================================================================
+# 1. CONFIGURATION
+# ============================================================================
 
-# Check N is idempotent for your rule set — empty list means it is.
-assert tok.validate_folding_rules() == []
+# Full corpus path (17.4M lines)
+CORPUS_PATH = "dataset/book_bank_wiki_corpus_ne.txt"
+# Where to store the half-corpus file
+HALF_CORPUS_PATH = "dataset/book_bank_wiki_corpus_ne_half.txt"
+# Where to store a sample for akshara harvesting (first 1M lines)
+AKSHARA_SAMPLE_PATH = "dataset/akshara_sample.txt"
+# Checkpoint directory (create if missing)
+CHECKPOINT_DIR = "checkpoints"
+# Output vocab file
+OUTPUT_VOCAB_TSV = "trained_vocab.tsv"
 
-# Harvest the akshara inventory the DFA actually produces on YOUR corpus.
-# Skipping this is the main cause of byte-fallback blowups.
-aksharas = tok.harvest_aksharas("corpus.txt", min_freq=5)
+# Training hyperparameters
+VOCAB_BUDGET = 100_000           # final vocabulary size
+THETA = 100                      # frequency threshold for ambiguous seeds
+MIN_WORD_FREQ = 2                # drop word types seen fewer times
+PROGRESS_LINES = 500_000         # print build progress every N lines
+PROGRESS_MERGES = 1000           # print train progress every N merges
+CHECKPOINT_EVERY = 50_000        # save a checkpoint every N merges
+CHECKPOINT_KEEP = 3              # keep only last 3 checkpoints
 
-tok.initialize_vocab(
-    aksharas=aksharas,
-    seed_morphemes=["हरू", "गा.वि.स."],
-    punctuation=[".", ",", "।", "॥", "?", "!"],
-    v_strict=["हरू"],               # unconditionally frozen, terminal
-    v_ambiguous=[],                  # frequency-gated at θ
-)
+# ============================================================================
+# 2. PREPARE DATA (half corpus + akshara sample)
+# ============================================================================
 
-tok.train_bilingual_from_file(
-    "corpus.txt",
-    dev_budget=40_000,
-    lat_budget=8_000,
-    theta=100,
-)
+def prepare_files():
+    """Create half‑corpus and akshara sample if they don't exist."""
+    if not os.path.exists(HALF_CORPUS_PATH):
+        print("[1/4] Creating half‑corpus file...")
+        # Get total lines
+        total = int(subprocess.check_output(f"wc -l < {CORPUS_PATH}", shell=True).strip())
+        half = total // 2
+        print(f"    Total lines: {total:,}, half: {half:,}")
+        cmd = f"head -n {half} {CORPUS_PATH} > {HALF_CORPUS_PATH}"
+        subprocess.check_call(cmd, shell=True)
+        print(f"    Created {HALF_CORPUS_PATH}")
+    else:
+        print("[1/4] Half‑corpus file already exists, skipping.")
 
-tok.save_vocab_tsv("vocab.tsv")     # stamped with mode=LM
+    if not os.path.exists(AKSHARA_SAMPLE_PATH):
+        print("[1/4] Creating akshara sample (first 1M lines)...")
+        cmd = f"head -n 1000000 {CORPUS_PATH} > {AKSHARA_SAMPLE_PATH}"
+        subprocess.check_call(cmd, shell=True)
+        print(f"    Created {AKSHARA_SAMPLE_PATH}")
+    else:
+        print("[1/4] Akshara sample already exists, skipping.")
+
+# ============================================================================
+# 3. MAIN TRAINING PIPELINE
+# ============================================================================
+
+def main():
+    start_total = time.time()
+
+    # Prepare data files
+    prepare_files()
+
+    # Create checkpoint directory
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    # --------------------------------------------------------------------
+    # 3.1 Initialise tokenizer (mode=LM for aggressive folding)
+    # --------------------------------------------------------------------
+    print("[2/4] Initialising tokenizer with mode=LM...")
+    tok = HimalayanTokenization.PyHimalayanTokenization(mode="LM")
+
+    # --------------------------------------------------------------------
+    # 3.2 Harvest aksharas from the sample
+    # --------------------------------------------------------------------
+    print("[2/4] Harvesting aksharas from sample...")
+    start_harvest = time.time()
+    aksharas = tok.harvest_aksharas(AKSHARA_SAMPLE_PATH, min_freq=5)
+    harvest_time = time.time() - start_harvest
+    print(f"    Harvested {len(aksharas)} aksharas in {harvest_time:.2f}s")
+
+    # --------------------------------------------------------------------
+    # 3.3 Initialise vocabulary with those aksharas
+    # --------------------------------------------------------------------
+    print("[3/4] Initialising vocabulary...")
+    start_init = time.time()
+    tok.initialize_vocab(
+        aksharas=aksharas,
+        seed_morphemes=[],                 # add common stems manually if you have them
+        punctuation=[".", ",", "।", "॥", "?", "!", ";", ":"],
+        v_strict=[],                       # never split these (e.g., proper nouns)
+        v_ambiguous=[]                     # frequency‑gated seeds (none for now)
+    )
+    init_time = time.time() - start_init
+    print(f"    Initial vocab size: {tok.vocab_size()} (in {init_time:.2f}s)")
+
+    # --------------------------------------------------------------------
+    # 3.4 Train on the half‑corpus with checkpoints
+    # --------------------------------------------------------------------
+    print(f"[4/4] Training on half corpus: {HALF_CORPUS_PATH}")
+    print(f"    Target vocab: {VOCAB_BUDGET:,}")
+    print(f"    Checkpoints every {CHECKPOINT_EVERY:,} merges → {CHECKPOINT_DIR}")
+    start_train = time.time()
+
+    final_vocab_size = tok.train_from_file(
+        path=HALF_CORPUS_PATH,
+        vocab_budget=VOCAB_BUDGET,
+        theta=THETA,
+        min_word_freq=MIN_WORD_FREQ,
+        progress_lines=PROGRESS_LINES,
+        progress_merges=PROGRESS_MERGES,
+        checkpoint_dir=CHECKPOINT_DIR,
+        checkpoint_every=CHECKPOINT_EVERY,
+        checkpoint_keep=CHECKPOINT_KEEP
+    )
+
+    train_time = time.time() - start_train
+    print(f"    Training completed in {train_time/60:.2f} minutes.")
+    print(f"    Final vocab size: {final_vocab_size:,}")
+
+    # --------------------------------------------------------------------
+    # 3.5 Save final vocabulary
+    # --------------------------------------------------------------------
+    print("[5/4] Saving final vocabulary...")
+    tok.save_vocab_tsv(OUTPUT_VOCAB_TSV)
+    print(f"    Saved to {OUTPUT_VOCAB_TSV}")
+
+    # --------------------------------------------------------------------
+    # 3.6 Quick sanity test on a few sentences
+    # --------------------------------------------------------------------
+    print("\n[6/4] Sample tokenization (first few sentences):")
+    test_sentences = [
+        "नेपाल एक सुन्दर देश हो।",
+        "हामीले विद्यालयमा पढ्यौं।",
+        "संविधान सभाबाट पारित भयो।",
+    ]
+    for sent in test_sentences:
+        tokens = tok.tokenize_to_strings(sent)
+        print(f"  {sent} -> {tokens}")
+
+    total_time = time.time() - start_total
+    print(f"\n✅ ALL DONE in {total_time/60:.2f} minutes.")
 ```
 
-### Encode
-
-```python
-tok = PyHimalayanTOK_Nepali(mode="LM")
-tok.load_vocab_tsv("vocab.tsv")     # refuses a vocab built under a different mode
-
-ids = tok.encode("मेरो नाम राम हो।")
-print(tok.decode(ids))              # == tok.normalize(original)
-assert tok.verify_roundtrip("मेरो नाम राम हो।")
-```
 
 ### Evaluate
 
-```python
-stats = tok.corpus_stats(open("heldout.txt").read().splitlines())
-print(stats["fertility"])            # tokens per whitespace word
-print(stats["byte_fallback_rate"])   # should be near zero
-print(stats["roundtrip_pass_rate"])  # should be exactly 1.0
+``` 
+=== sample tokenization ===
+  आज PyTorch मा transformer model train गरें।
+    12 tok = 11 content + 1 space | 1.71/word (1.57 ex-space) | roundtrip=OK
+    ▁आज ▂Py Tor ch ▁मा ▂transformer ▂model ▂ train · गर ें।
+  CUDA memory पर्याप्त नभएकाले batch size घटाएँ।
+    12 tok = 11 content + 1 space | 1.71/word (1.57 ex-space) | roundtrip=OK
+    ▂CUDA ▂memory ▁पर्याप्त ▁नभएकाले ▂batch ▂ size · घट ा एँ ।
+  LangChain प्रयोग गरेर RAG pipeline तयार गरियो।
+    12 tok = 10 content + 2 space | 1.71/word (1.43 ex-space) | roundtrip=OK
+    ▂Lang Chain ▁प्रयोग ▁गरेर ▂RA G ▂pipeline · तयार · गरि यो।
+  Vector database मा embeddings store गरियो।
+    10 tok = 9 content + 1 space | 1.67/word (1.50 ex-space) | roundtrip=OK
+    ▂Vector ▂database ▁मा ▂embedding s ▂ store · गरि यो।
+  Model deployment Docker र Kubernetes मार्फत गरियो।
+    12 tok = 10 content + 2 space | 1.71/word (1.43 ex-space) | roundtrip=OK
+    ▂Model ▂deployment ▂Docker ▁र ▂Kub ernet es · मार्फत · गरि यो।
+  Apache Spark प्रयोग गरेर data preprocessing गरियो।
+    9 tok = 8 content + 1 space | 1.29/word (1.14 ex-space) | roundtrip=OK
+    ▂Apache ▂Spark ▁प्रयोग ▁गरेर ▂data ▂preprocessing · गरि यो।
+  PySpark ले ५० लाख records process गर्यो।
+    11 tok = 10 content + 1 space | 1.57/word (1.43 ex-space) | roundtrip=OK
+    ▂Py Spark ▁ले ▁५० ▁लाख ▂records ▂ process · गर् यो।
 ```
 
-`corpus_stats` runs through the production encode path, so evaluation cannot drift
-from training. BPC is deliberately absent — it needs model log-probs. Compute it as
-`(Σ −log₂ p(token)) / bytes`, using the byte count this returns.
-
-### Morphology (once you have an FST)
-
-```python
-tok.add_paradigm(root_id=0, transitions={"जा": ["न्छु", "न्छौ", "न्छ"]})
-tok.set_root_prior({0: 0.31, 1: 0.12})       # from FST analysis over the corpus
-tok.enable_probabilistic_k(True, root_set_cap=16)
-tok.assign_initial_roots()
-
-# Phase 5: U : TokenID -> RootID. Lexicon first — it's the only thing that can
-# express suppletion (गयो shares no substring with जानु).
-tok.set_lexicon({"गयो": 0, "भयो": 1})
-tok.build_paradigm_embedding()
-
-u_ids = tok.paradigm_embedding_ids()          # -1 = ⊥, feed to nn.Embedding
-script_ids = tok.script_ids()                 # 0=DEV 1=LAT 2=PUN 3=FMT 4=MAL
-```
 
 ---
 
@@ -790,9 +895,9 @@ MIT
 ## Citation
 
 ```bibtex
-@software{himalayantok_nepali,
-  title  = {HimalayanTOK: An Akshara-Aware Constrained BPE Tokenizer for Nepali},
+@software{HimalyanTokenizer_nepali,
+  title  = {HimalyanTokenizer: An Akshara-Aware Constrained BPE Tokenizer for Nepali},
   year   = {2026},
-  url    = {https://github.com/<you>/HimalayanTOK-Nepali}
+  url    = {https://github.com/<you>/HimalyanTokenizer-Nepali}
 }
 ```
