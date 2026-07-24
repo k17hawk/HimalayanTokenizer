@@ -844,6 +844,15 @@ def main():
 ```
 
 
+### Example usage
+```
+from HimalayanTokenization import load_default_tokenizer
+tok = load_default_tokenizer()
+ids = tok.encode('मेरो नाम राम हो।')
+print('IDs:', ids)
+print('Decoded:', tok.decode(ids))
+print('Roundtrip OK:', tok.verify_roundtrip('मेरो नाम राम हो।'))
+```
 ---
 
 ## Guarantees
