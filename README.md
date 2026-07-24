@@ -785,7 +785,7 @@ probabilistic ranking rescues that. Measure coverage before optimizing anything 
 
 ## License
 
-MIT.
+MIT 
 
 ## Citation
 
