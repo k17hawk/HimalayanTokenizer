@@ -1,5 +1,4 @@
-from HimalayanTokenization import PyHimalayanTokenization
-import HimalayanTokenization
+from .HimalayanTokenization import PyHimalayanTokenization
 from importlib.resources import files
 
 def load_default_tokenizer(mode="LM"):
